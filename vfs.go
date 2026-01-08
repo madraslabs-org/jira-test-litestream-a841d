@@ -278,7 +278,7 @@ func (f *VFSFile) pollReplicaClient(ctx context.Context) error {
 	f.logger.Debug("polling replica client", "txid", pos.TXID.String())
 
 	// Start reading from the next LTX file after the current position.
-	itr, err := f.client.LTXFiles(ctx, 0, f.pos.TXID+1, false)
+	itr, err := f.client.LTXFiles(ctx, 0, f.pos.TXID+1)
 	if err != nil {
 		return fmt.Errorf("ltx files: %w", err)
 	}

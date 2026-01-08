@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/url"
 	"os"
 	"os/user"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/dustin/go-humanize"
 	"github.com/superfly/ltx"
 	"gopkg.in/yaml.v2"
 	_ "modernc.org/sqlite"
@@ -511,49 +509,6 @@ func NewDBFromConfig(dbc *DBConfig) (*litestream.DB, error) {
 	return db, nil
 }
 
-// ByteSize is a custom type for parsing byte sizes from YAML.
-// It supports both SI units (KB, MB, GB using base 1000) and IEC units
-// (KiB, MiB, GiB using base 1024) as well as short forms (K, M, G).
-type ByteSize int64
-
-// UnmarshalYAML implements yaml.Unmarshaler for ByteSize.
-func (b *ByteSize) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var s string
-	if err := unmarshal(&s); err != nil {
-		return err
-	}
-
-	size, err := ParseByteSize(s)
-	if err != nil {
-		return err
-	}
-	*b = ByteSize(size)
-	return nil
-}
-
-// ParseByteSize parses a byte size string using github.com/dustin/go-humanize.
-// Supports both SI units (KB=1000, MB=1000², etc.) and IEC units (KiB=1024, MiB=1024², etc.).
-// Examples: "1MB", "5MiB", "1.5GB", "100B", "1024KB"
-func ParseByteSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, fmt.Errorf("empty size string")
-	}
-
-	// Use go-humanize to parse the byte size string
-	bytes, err := humanize.ParseBytes(s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid size format: %w", err)
-	}
-
-	// Check that the value fits in int64
-	if bytes > math.MaxInt64 {
-		return 0, fmt.Errorf("size %d exceeds maximum allowed value (%d)", bytes, int64(math.MaxInt64))
-	}
-
-	return int64(bytes), nil
-}
-
 // ReplicaConfig represents the configuration for a single replica in a database.
 type ReplicaConfig struct {
 	Type               string         `yaml:"type"` // "file", "s3"
@@ -564,15 +519,13 @@ type ReplicaConfig struct {
 	ValidationInterval *time.Duration `yaml:"validation-interval"`
 
 	// S3 settings
-	AccessKeyID     string    `yaml:"access-key-id"`
-	SecretAccessKey string    `yaml:"secret-access-key"`
-	Region          string    `yaml:"region"`
-	Bucket          string    `yaml:"bucket"`
-	Endpoint        string    `yaml:"endpoint"`
-	ForcePathStyle  *bool     `yaml:"force-path-style"`
-	SkipVerify      bool      `yaml:"skip-verify"`
-	PartSize        *ByteSize `yaml:"part-size"`
-	Concurrency     *int      `yaml:"concurrency"`
+	AccessKeyID     string `yaml:"access-key-id"`
+	SecretAccessKey string `yaml:"secret-access-key"`
+	Region          string `yaml:"region"`
+	Bucket          string `yaml:"bucket"`
+	Endpoint        string `yaml:"endpoint"`
+	ForcePathStyle  *bool  `yaml:"force-path-style"`
+	SkipVerify      bool   `yaml:"skip-verify"`
 
 	// ABS settings
 	AccountName string `yaml:"account-name"`
@@ -612,15 +565,6 @@ func NewReplicaFromConfig(c *ReplicaConfig, db *litestream.DB) (_ *litestream.Re
 	// Ensure user did not specify URL in path.
 	if isURL(c.Path) {
 		return nil, fmt.Errorf("replica path cannot be a url, please use the 'url' field instead: %s", c.Path)
-	}
-
-	// Reject age encryption configuration as it's currently non-functional.
-	// Age encryption support was removed during the LTX storage layer refactor
-	// and has not been reimplemented. Accepting this config would silently
-	// write plaintext data to remote storage instead of encrypted data.
-	// See: https://github.com/benbjohnson/litestream/issues/790
-	if len(c.Age.Identities) > 0 || len(c.Age.Recipients) > 0 {
-		return nil, fmt.Errorf("age encryption is not currently supported, if you need encryption please revert back to Litestream v0.3.x")
 	}
 
 	// Build replica.
@@ -769,15 +713,6 @@ func newS3ReplicaClientFromConfig(c *ReplicaConfig, _ *litestream.Replica) (_ *s
 	client.Endpoint = endpoint
 	client.ForcePathStyle = forcePathStyle
 	client.SkipVerify = skipVerify
-
-	// Apply upload configuration if specified.
-	if c.PartSize != nil {
-		client.PartSize = int64(*c.PartSize)
-	}
-	if c.Concurrency != nil {
-		client.Concurrency = *c.Concurrency
-	}
-
 	return client, nil
 }
 
