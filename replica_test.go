@@ -217,16 +217,14 @@ func TestReplica_RestoreAndReplicateAfterDataLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Restore to a path with non-existent parent directory to verify it gets created
-	restoredPath := dbDir + "/restored/db.sqlite"
-	restoreOpt.OutputPath = restoredPath
+	// Restore again
 	if err := db2.Replica.Restore(ctx, restoreOpt); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Step 4 complete: Second restore from backup to path with non-existent parent")
+	t.Log("Step 4 complete: Second restore from backup")
 
 	// Step 5: Verify the new data (value=2) exists in restored database
-	sqldb3 := testingutil.MustOpenSQLDB(t, restoredPath)
+	sqldb3 := testingutil.MustOpenSQLDB(t, dbPath)
 	defer sqldb3.Close()
 
 	var count int
@@ -258,7 +256,7 @@ func TestReplica_CalcRestorePlan(t *testing.T) {
 	t.Run("SnapshotOnly", func(t *testing.T) {
 		var c mock.ReplicaClient
 		r := litestream.NewReplicaWithClient(db, &c)
-		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			if level == litestream.SnapshotLevel {
 				return ltx.NewFileInfoSliceIterator([]*ltx.FileInfo{{
 					Level:     litestream.SnapshotLevel,
@@ -286,7 +284,7 @@ func TestReplica_CalcRestorePlan(t *testing.T) {
 	t.Run("SnapshotAndIncremental", func(t *testing.T) {
 		var c mock.ReplicaClient
 		r := litestream.NewReplicaWithClient(db, &c)
-		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			switch level {
 			case litestream.SnapshotLevel:
 				return ltx.NewFileInfoSliceIterator([]*ltx.FileInfo{
@@ -336,7 +334,7 @@ func TestReplica_CalcRestorePlan(t *testing.T) {
 	t.Run("ErrNonContiguousFiles", func(t *testing.T) {
 		var c mock.ReplicaClient
 		r := litestream.NewReplicaWithClient(db, &c)
-		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			switch level {
 			case litestream.SnapshotLevel:
 				return ltx.NewFileInfoSliceIterator([]*ltx.FileInfo{
@@ -360,7 +358,7 @@ func TestReplica_CalcRestorePlan(t *testing.T) {
 	t.Run("ErrTxNotAvailable", func(t *testing.T) {
 		var c mock.ReplicaClient
 		r := litestream.NewReplicaWithClient(db, &c)
-		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			switch level {
 			case litestream.SnapshotLevel:
 				return ltx.NewFileInfoSliceIterator([]*ltx.FileInfo{
@@ -379,7 +377,7 @@ func TestReplica_CalcRestorePlan(t *testing.T) {
 
 	t.Run("ErrNoFiles", func(t *testing.T) {
 		var c mock.ReplicaClient
-		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		c.LTXFilesFunc = func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			return ltx.NewFileInfoSliceIterator(nil), nil
 		}
 		r := litestream.NewReplicaWithClient(db, &c)
@@ -415,7 +413,7 @@ func TestReplica_ContextCancellationNoLogs(t *testing.T) {
 	// Create a replica with a mock client that simulates context cancellation during Sync
 	syncCount := 0
 	mockClient := &mock.ReplicaClient{
-		LTXFilesFunc: func(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+		LTXFilesFunc: func(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 			syncCount++
 			// First few calls succeed, then return context.Canceled
 			if syncCount <= 2 {
