@@ -1398,7 +1398,8 @@ func (db *DB) Compact(ctx context.Context, dstLevel int) (*ltx.FileInfo, error) 
 	seekTXID := prevMaxInfo.MaxTXID + 1
 
 	// Collect files after last compaction.
-	itr, err := db.Replica.Client.LTXFiles(ctx, srcLevel, seekTXID)
+	// Normal operation - use fast timestamps
+	itr, err := db.Replica.Client.LTXFiles(ctx, srcLevel, seekTXID, false)
 	if err != nil {
 		return nil, fmt.Errorf("source ltx files after %s: %w", seekTXID, err)
 	}
@@ -1472,7 +1473,7 @@ func (db *DB) Compact(ctx context.Context, dstLevel int) (*ltx.FileInfo, error) 
 
 	// If this is L1, clean up L0 files that are below the minTXID.
 	if dstLevel == 1 {
-		if err := db.EnforceRetentionByTXID(ctx, 0, maxTXID); err != nil {
+		if err := db.EnforceRetentionByTXID(ctx, 0, minTXID); err != nil {
 			// Don't log context cancellation errors during shutdown
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				db.Logger.Error("enforce L0 retention", "error", err)
@@ -1505,7 +1506,8 @@ func (db *DB) Snapshot(ctx context.Context) (*ltx.FileInfo, error) {
 func (db *DB) EnforceSnapshotRetention(ctx context.Context, timestamp time.Time) (minSnapshotTXID ltx.TXID, err error) {
 	db.Logger.Debug("enforcing snapshot retention", "timestamp", timestamp)
 
-	itr, err := db.Replica.Client.LTXFiles(ctx, SnapshotLevel, 0)
+	// Normal operation - use fast timestamps
+	itr, err := db.Replica.Client.LTXFiles(ctx, SnapshotLevel, 0, false)
 	if err != nil {
 		return 0, fmt.Errorf("fetch ltx files: %w", err)
 	}
@@ -1551,7 +1553,8 @@ func (db *DB) EnforceSnapshotRetention(ctx context.Context, timestamp time.Time)
 func (db *DB) EnforceRetentionByTXID(ctx context.Context, level int, txID ltx.TXID) (err error) {
 	db.Logger.Debug("enforcing retention", "level", level, "txid", txID)
 
-	itr, err := db.Replica.Client.LTXFiles(ctx, level, 0)
+	// Normal operation - use fast timestamps
+	itr, err := db.Replica.Client.LTXFiles(ctx, level, 0, false)
 	if err != nil {
 		return fmt.Errorf("fetch ltx files: %w", err)
 	}
