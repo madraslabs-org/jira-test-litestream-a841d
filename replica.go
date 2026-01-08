@@ -191,8 +191,7 @@ func (r *Replica) calcPos(ctx context.Context) (pos ltx.Pos, err error) {
 // MaxLTXFileInfo returns metadata about the last LTX file for a given level.
 // Returns nil if no files exist for the level.
 func (r *Replica) MaxLTXFileInfo(ctx context.Context, level int) (info ltx.FileInfo, err error) {
-	// Normal operation - use fast timestamps
-	itr, err := r.Client.LTXFiles(ctx, level, 0, false)
+	itr, err := r.Client.LTXFiles(ctx, level, 0)
 	if err != nil {
 		return info, err
 	}
@@ -341,8 +340,7 @@ func (r *Replica) monitor(ctx context.Context) {
 func (r *Replica) CreatedAt(ctx context.Context) (time.Time, error) {
 	var min time.Time
 
-	// Normal operation - use fast timestamps
-	itr, err := r.Client.LTXFiles(ctx, 0, 0, false)
+	itr, err := r.Client.LTXFiles(ctx, 0, 0)
 	if err != nil {
 		return min, err
 	}
@@ -357,8 +355,7 @@ func (r *Replica) CreatedAt(ctx context.Context) (time.Time, error) {
 // TimeBounds returns the creation time & last updated time.
 // Returns zero time if LTX files exist.
 func (r *Replica) TimeBounds(ctx context.Context) (createdAt, updatedAt time.Time, err error) {
-	// Normal operation - use fast timestamps
-	itr, err := r.Client.LTXFiles(ctx, 0, 0, false)
+	itr, err := r.Client.LTXFiles(ctx, 0, 0)
 	if err != nil {
 		return createdAt, updatedAt, err
 	}
@@ -494,8 +491,7 @@ func CalcRestorePlan(ctx context.Context, client ReplicaClient, txID ltx.TXID, t
 	logger = logger.With("target", txID)
 
 	// Start with latest snapshot before target TXID or timestamp.
-	// Pass useMetadata flag to enable accurate timestamp fetching for timestamp-based restore.
-	if a, err := FindLTXFiles(ctx, client, SnapshotLevel, !timestamp.IsZero(), func(info *ltx.FileInfo) (bool, error) {
+	if a, err := FindLTXFiles(ctx, client, SnapshotLevel, func(info *ltx.FileInfo) (bool, error) {
 		logger.Debug("finding snapshot before target TXID or timestamp", "snapshot", info.MaxTXID)
 		if txID != 0 {
 			return info.MaxTXID <= txID, nil
@@ -517,8 +513,7 @@ func CalcRestorePlan(ctx context.Context, client ReplicaClient, txID ltx.TXID, t
 	for level := maxLevel; level >= 0; level-- {
 		logger.Debug("finding ltx files for level", "level", level)
 
-		// Pass useMetadata flag to enable accurate timestamp fetching for timestamp-based restore.
-		a, err := FindLTXFiles(ctx, client, level, !timestamp.IsZero(), func(info *ltx.FileInfo) (bool, error) {
+		a, err := FindLTXFiles(ctx, client, level, func(info *ltx.FileInfo) (bool, error) {
 			if info.MaxTXID <= infos.MaxTXID() { // skip if already included in previous levels
 				return false, nil
 			}

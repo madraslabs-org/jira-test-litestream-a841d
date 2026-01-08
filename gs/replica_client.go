@@ -1,7 +1,6 @@
 package gs
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,9 +20,6 @@ import (
 
 // ReplicaClientType is the client type for this package.
 const ReplicaClientType = "gs"
-
-// MetadataKeyTimestamp is the metadata key for storing LTX file timestamps in GCS.
-const MetadataKeyTimestamp = "litestream-timestamp"
 
 var _ litestream.ReplicaClient = (*ReplicaClient)(nil)
 
@@ -95,9 +91,7 @@ func (c *ReplicaClient) DeleteAll(ctx context.Context) error {
 }
 
 // LTXFiles returns an iterator over all available LTX files for a level.
-// GCS always uses accurate timestamps from metadata since they're included in LIST operations at zero cost.
-// The useMetadata parameter is ignored.
-func (c *ReplicaClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+func (c *ReplicaClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 	if err := c.Init(ctx); err != nil {
 		return nil, err
 	}
@@ -108,7 +102,7 @@ func (c *ReplicaClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID, 
 		prefix += seek.String()
 	}
 
-	return newLTXFileIterator(c.bkt.Objects(ctx, &storage.Query{Prefix: prefix}), c, level), nil
+	return newLTXFileIterator(c.bkt.Objects(ctx, &storage.Query{Prefix: prefix}), level), nil
 }
 
 // WriteLTXFile writes an LTX file from rd to a remote path.
@@ -118,30 +112,12 @@ func (c *ReplicaClient) WriteLTXFile(ctx context.Context, level int, minTXID, ma
 	}
 
 	key := litestream.LTXFilePath(c.Path, level, minTXID, maxTXID)
-
-	// Use TeeReader to peek at LTX header while preserving data for upload
-	var buf bytes.Buffer
-	teeReader := io.TeeReader(rd, &buf)
-
-	// Extract timestamp from LTX header
-	hdr, _, err := ltx.PeekHeader(teeReader)
-	if err != nil {
-		return nil, fmt.Errorf("extract timestamp from LTX header: %w", err)
-	}
-	timestamp := time.UnixMilli(hdr.Timestamp).UTC()
-
-	// Combine buffered data with rest of reader
-	fullReader := io.MultiReader(&buf, rd)
+	startTime := time.Now()
 
 	w := c.bkt.Object(key).NewWriter(ctx)
 	defer w.Close()
 
-	// Store timestamp in GCS metadata for accurate timestamp retrieval
-	w.Metadata = map[string]string{
-		MetadataKeyTimestamp: timestamp.Format(time.RFC3339Nano),
-	}
-
-	n, err := io.Copy(w, fullReader)
+	n, err := io.Copy(w, rd)
 	if err != nil {
 		return info, err
 	} else if err := w.Close(); err != nil {
@@ -156,7 +132,7 @@ func (c *ReplicaClient) WriteLTXFile(ctx context.Context, level int, minTXID, ma
 		MinTXID:   minTXID,
 		MaxTXID:   maxTXID,
 		Size:      n,
-		CreatedAt: timestamp,
+		CreatedAt: startTime.UTC(),
 	}, nil
 }
 
@@ -200,18 +176,16 @@ func (c *ReplicaClient) DeleteLTXFiles(ctx context.Context, a []*ltx.FileInfo) e
 }
 
 type ltxFileIterator struct {
-	it     *storage.ObjectIterator
-	client *ReplicaClient
-	level  int
-	info   *ltx.FileInfo
-	err    error
+	it    *storage.ObjectIterator
+	level int
+	info  *ltx.FileInfo
+	err   error
 }
 
-func newLTXFileIterator(it *storage.ObjectIterator, client *ReplicaClient, level int) *ltxFileIterator {
+func newLTXFileIterator(it *storage.ObjectIterator, level int) *ltxFileIterator {
 	return &ltxFileIterator{
-		it:     it,
-		client: client,
-		level:  level,
+		it:    it,
+		level: level,
 	}
 }
 
@@ -241,26 +215,14 @@ func (itr *ltxFileIterator) Next() bool {
 			continue
 		}
 
-		// Always use accurate timestamp from metadata since it's zero-cost
-		// GCS includes metadata in LIST operations, so no extra API call needed
-		createdAt := attrs.Created.UTC()
-		if attrs.Metadata != nil {
-			if ts, ok := attrs.Metadata[MetadataKeyTimestamp]; ok {
-				if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-					createdAt = parsed
-				}
-			}
-		}
-
 		// Store current snapshot and return.
 		itr.info = &ltx.FileInfo{
 			Level:     itr.level,
 			MinTXID:   minTXID,
 			MaxTXID:   maxTXID,
 			Size:      attrs.Size,
-			CreatedAt: createdAt,
+			CreatedAt: attrs.Created.UTC(),
 		}
-
 		return true
 	}
 }

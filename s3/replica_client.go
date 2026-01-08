@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -34,9 +33,6 @@ import (
 
 // ReplicaClientType is the client type for this package.
 const ReplicaClientType = "s3"
-
-// MetadataKeyTimestamp is the metadata key for storing LTX file timestamps in S3.
-const MetadataKeyTimestamp = "litestream-timestamp"
 
 // MaxKeys is the number of keys S3 can operate on per batch.
 const MaxKeys = 1000
@@ -275,13 +271,11 @@ func (c *ReplicaClient) findBucketRegion(ctx context.Context, bucket string) (st
 }
 
 // LTXFiles returns an iterator over all LTX files on the replica for the given level.
-// When useMetadata is true, fetches accurate timestamps from S3 metadata via HeadObject.
-// When false, uses fast LastModified timestamps from LIST operation.
-func (c *ReplicaClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID, useMetadata bool) (ltx.FileIterator, error) {
+func (c *ReplicaClient) LTXFiles(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error) {
 	if err := c.Init(ctx); err != nil {
 		return nil, err
 	}
-	return newFileIterator(ctx, c, level, seek, useMetadata), nil
+	return newFileIterator(ctx, c, level, seek), nil
 }
 
 // OpenLTXFile returns a reader for an LTX file
@@ -316,39 +310,19 @@ func (c *ReplicaClient) OpenLTXFile(ctx context.Context, level int, minTXID, max
 }
 
 // WriteLTXFile writes an LTX file to the replica.
-// Extracts timestamp from LTX header and stores it in S3 metadata to preserve original creation time.
 func (c *ReplicaClient) WriteLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, r io.Reader) (*ltx.FileInfo, error) {
 	if err := c.Init(ctx); err != nil {
 		return nil, err
 	}
 
-	// Use TeeReader to peek at LTX header while preserving data for upload
-	var buf bytes.Buffer
-	teeReader := io.TeeReader(r, &buf)
-
-	// Extract timestamp from LTX header
-	hdr, _, err := ltx.PeekHeader(teeReader)
-	if err != nil {
-		return nil, fmt.Errorf("extract timestamp from LTX header: %w", err)
-	}
-	timestamp := time.UnixMilli(hdr.Timestamp).UTC()
-
-	// Combine buffered data with rest of reader
-	rc := internal.NewReadCounter(io.MultiReader(&buf, r))
+	rc := internal.NewReadCounter(r)
 
 	filename := ltx.FormatFilename(minTXID, maxTXID)
 	key := c.Path + "/" + fmt.Sprintf("%04x/%s", level, filename)
-
-	// Store timestamp in S3 metadata for accurate timestamp retrieval
-	metadata := map[string]string{
-		MetadataKeyTimestamp: timestamp.Format(time.RFC3339Nano),
-	}
-
 	out, err := c.uploader.Upload(ctx, &s3.PutObjectInput{
-		Bucket:   aws.String(c.Bucket),
-		Key:      aws.String(key),
-		Body:     rc,
-		Metadata: metadata,
+		Bucket: aws.String(c.Bucket),
+		Key:    aws.String(key),
+		Body:   rc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("s3: upload to %s: %w", key, err)
@@ -360,7 +334,7 @@ func (c *ReplicaClient) WriteLTXFile(ctx context.Context, level int, minTXID, ma
 		MinTXID:   minTXID,
 		MaxTXID:   maxTXID,
 		Size:      rc.N(),
-		CreatedAt: timestamp,
+		CreatedAt: time.Now(),
 	}
 
 	internal.OperationTotalCounterVec.WithLabelValues(ReplicaClientType, "PUT").Inc()
@@ -461,12 +435,11 @@ func (c *ReplicaClient) DeleteAll(ctx context.Context) error {
 
 // fileIterator represents an iterator over LTX files in S3.
 type fileIterator struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	client      *ReplicaClient
-	level       int
-	seek        ltx.TXID
-	useMetadata bool // When true, fetch accurate timestamps from metadata
+	ctx    context.Context
+	cancel context.CancelFunc
+	client *ReplicaClient
+	level  int
+	seek   ltx.TXID
 
 	paginator *s3.ListObjectsV2Paginator
 	page      *s3.ListObjectsV2Output
@@ -477,16 +450,15 @@ type fileIterator struct {
 	info   *ltx.FileInfo
 }
 
-func newFileIterator(ctx context.Context, client *ReplicaClient, level int, seek ltx.TXID, useMetadata bool) *fileIterator {
+func newFileIterator(ctx context.Context, client *ReplicaClient, level int, seek ltx.TXID) *fileIterator {
 	ctx, cancel := context.WithCancel(ctx)
 
 	itr := &fileIterator{
-		ctx:         ctx,
-		cancel:      cancel,
-		client:      client,
-		level:       level,
-		seek:        seek,
-		useMetadata: useMetadata,
+		ctx:    ctx,
+		cancel: cancel,
+		client: client,
+		level:  level,
+		seek:   seek,
 	}
 
 	// Create paginator for listing objects with level prefix
@@ -560,34 +532,7 @@ func (itr *fileIterator) Next() bool {
 
 			// Set file info
 			info.Size = aws.ToInt64(obj.Size)
-
-			// Use fast LastModified timestamp by default
-			createdAt := aws.ToTime(obj.LastModified).UTC()
-
-			// Only fetch accurate timestamp from metadata when requested (timestamp-based restore)
-			if itr.useMetadata {
-				head, err := itr.client.s3.HeadObject(itr.ctx, &s3.HeadObjectInput{
-					Bucket: aws.String(itr.client.Bucket),
-					Key:    obj.Key,
-				})
-				if err != nil {
-					itr.err = fmt.Errorf("fetch object metadata: %w", err)
-					return false
-				}
-
-				if head.Metadata != nil {
-					if ts, ok := head.Metadata[MetadataKeyTimestamp]; ok {
-						if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-							createdAt = parsed
-						} else {
-							itr.err = fmt.Errorf("parse timestamp from metadata: %w", err)
-							return false
-						}
-					}
-				}
-			}
-
-			info.CreatedAt = createdAt
+			info.CreatedAt = aws.ToTime(obj.LastModified)
 			itr.info = info
 			return true
 		}
